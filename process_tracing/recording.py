@@ -8,7 +8,7 @@ Licence: GPLv3
 """
 import time
 import os
-from process_tracing.tracing import Tracing
+from process_tracing.constants import *
 
 
 class TracingRecord(object):
@@ -50,7 +50,7 @@ class TracingRecord(object):
         :param message: Additional message
         :return: None
         """
-        if self.mode & Tracing.MODE_RUNTIME_TRACING:
+        if self.mode & TRACING_MODE_RUNTIME_TRACING:
             self._log.append(RuntimeActionRecord(message_type, message))
 
     def syscall_log(self, syscall):
@@ -61,10 +61,10 @@ class TracingRecord(object):
         """
 
         # Check if syscall tracing is enabled
-        if self.mode & Tracing.MODE_SYSCALLS:
+        if self.mode & TRACING_MODE_SYSCALLS:
             # Check if this is the result of a syscall or a new issued syscall
             is_new_syscall = (syscall.result is None)
-            extract_arguments = ((self.mode & Tracing.MODE_SYSCALL_ARGUMENTS) != 0)
+            extract_arguments = ((self.mode & TRACING_MODE_SYSCALL_ARGUMENTS) != 0)
 
             if is_new_syscall:
                 self._log.append(SyscallRecord(syscall, extract_arguments))
@@ -81,12 +81,26 @@ class TracingRecord(object):
         :param syscall: Syscall to record
         :return: None
         """
-        if self.mode & Tracing.MODE_FILE_ACCESS:
+        if self.mode & TRACING_MODE_FILE_ACCESS:
             # Check if this is the result of a syscall or a new issued syscall
             is_new_syscall = (syscall.result is None)
 
             if not is_new_syscall:
                 self._log.append(FileAccessRecord(syscall))
+
+    def get_exit_code(self):
+        """
+        Search for the exit code of the given traced process or thread
+        This will search the log for a RuntimeActionRecord with the RuntimeActionRecord.TYPE_EXITED type
+        :return: Exit code if a matching record was found, else None
+        """
+        for entry in reversed(self._log):
+            if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_EXITED:
+                return entry.message['exit_code']
+
+        return None
+
+    exit_code = property(get_exit_code)
 
 
 class LogRecord(object):
@@ -101,6 +115,9 @@ class LogRecord(object):
         """
         self.timestamp = time.time()
         self.message = message
+
+    def __repr__(self):
+        return '[{}] LOG: {}'.format(self.timestamp, self.message)
 
 
 class RuntimeActionRecord(LogRecord):
@@ -124,6 +141,21 @@ class RuntimeActionRecord(LogRecord):
         super().__init__(message)
         self.type = message_type
 
+    def __repr__(self):
+        message = "Unknown type"
+        if self.type == RuntimeActionRecord.TYPE_STARTED:
+            message = "Process started"
+        elif self.type == RuntimeActionRecord.TYPE_EXITED:
+            message = "Process terminated: {}".format(self.message)
+        elif self.type == RuntimeActionRecord.TYPE_SIGNAL_RECEIVED:
+            message = "Process received signal {}".format(self.message)
+        elif self.type == RuntimeActionRecord.TYPE_EXEC:
+            message = "Process executed action with execve"
+        elif self.type == RuntimeActionRecord.TYPE_SPAWN_CHILD:
+            message = "Process spawned a child process"
+
+        return '[{}] Process Event: {}'.format(self.timestamp, message)
+
 
 class SyscallRecord(LogRecord):
     """
@@ -138,7 +170,7 @@ class SyscallRecord(LogRecord):
         super().__init__(None)
 
         self.name = syscall.name
-        self.id = syscall.id
+        self.id = syscall.syscall
         self.t_start = self.timestamp
         self.t_end = None
         self.result = None
@@ -156,6 +188,9 @@ class SyscallRecord(LogRecord):
         """
         self.t_end = time.time()
         self.result = syscall.result
+
+    def __repr__(self):
+        return '[{}] Syscall: {} result: {}'.format(self.timestamp, self.name, self.result)
 
 
 class SyscallArgument(object):
@@ -185,7 +220,7 @@ class FileAccessRecord(LogRecord):
         super().__init__(None)
 
         self.name = syscall.name
-        self.id = syscall.id
+        self.id = syscall.syscall
         self.result = syscall.result
         self.filename = None
         self.is_dir = False
@@ -195,7 +230,12 @@ class FileAccessRecord(LogRecord):
             if "char *" in argument.type:
                 # Get argument text and strip redundant quotes
                 text = argument.getText()
-                self.filename = text[text.index("'") + 1:text.rindex("'")]
-                self.is_dir = os.path.isdir(self.filename)
-                self.exists = os.path.exists(self.filename)
-                break
+                if "'" in text:
+                    self.filename = text[text.index("'") + 1:text.rindex("'")]
+                    self.is_dir = os.path.isdir(self.filename)
+                    self.exists = os.path.exists(self.filename)
+                    break
+
+    def __repr__(self):
+        return '[{}] Fila access: {} result: {} (exits: {}, is_dir: {})'.format(
+            self.timestamp, self.filename, self.result, self.exists, self.is_dir)

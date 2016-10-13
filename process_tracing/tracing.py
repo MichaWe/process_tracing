@@ -7,11 +7,11 @@ Mail: m.witt@htw-berlin.de
 Licence: GPLv3
 """
 import psutil
-import os
 import signal
 import posix
 from threading import Thread
 from process_tracing.recording import TracingRecord, RuntimeActionRecord
+from process_tracing.constants import *
 
 from ptrace.debugger import PtraceDebugger, ProcessEvent, NewProcessEvent, ProcessExit, ProcessSignal, ProcessExecution
 from ptrace.func_call import FunctionCallOptions
@@ -21,13 +21,6 @@ class Tracing:
     """
 
     """
-    MODE_RUNTIME_TRACING = 0x1
-    MODE_FILE_ACCESS = 0x2
-    MODE_SYSCALLS = 0x4
-    MODE_SYSCALL_ARGUMENTS = 0x8
-
-    _MODE_MASK = 0xFF
-
     def __init__(self, process, stop=False):
         """
         Create a new tracing instance
@@ -57,14 +50,21 @@ class Tracing:
         # If this parameters are valid iterables traced syscalls will be checked if they
         # are in the given filter list. If not they won't get recorded
         self.syscall_filter = None
-        self.file_access_filter = None
+        self.file_access_filter = ["open", "stat", "lstat", "fstat", "access", "connect"]
 
         self.syscall_filter_exclude = None
         self.file_access_filter_exclude = None
 
         # We start in Process runtime tracing mode only
-        self._mode = Tracing.MODE_RUNTIME_TRACING
+        self._mode = TRACING_MODE_RUNTIME_TRACING
         self._running = False
+
+    def get_logs(self):
+        """
+        Return the tracing records for all processed and threads that has been traced
+        :return: Dictionary with process/thread-id as key and TracingRecord-instances as key
+        """
+        return self._process_records
 
     def set_running(self, state):
         """
@@ -73,9 +73,9 @@ class Tracing:
         :return: True if the action could be executed, else False
         """
         if state:
-            return self.start()
+            self.start()
         else:
-            return self.stop()
+            self.stop()
 
     def is_running(self):
         """
@@ -150,21 +150,20 @@ class Tracing:
 
         # terminate all pending threads
 
-
     def set_runtime_tracing(self, enabled):
         """
         Set the runtime tracing mode to the given state
         :param enabled: True if the tracer should record process start, end and subprocess/thread spawn
         :return: None
         """
-        self._set_mode_option(Tracing.MODE_RUNTIME_TRACING, enabled)
+        self._set_mode_option(TRACING_MODE_RUNTIME_TRACING, enabled)
 
     def is_runtime_tracing(self):
         """
-        Returns True if the current tracer setup has Tracing.MODE_RUNTIME_TRACING enabled, else false
+        Returns True if the current tracer setup has TRACING_MODE_RUNTIME_TRACING enabled, else false
         :return: True or False
         """
-        return self._mode & Tracing.MODE_RUNTIME_TRACING
+        return self._mode & TRACING_MODE_RUNTIME_TRACING
 
     def set_file_access_tracing(self, enabled):
         """
@@ -172,14 +171,14 @@ class Tracing:
         :param enabled: True if the tracer should record all syscalls that are related to filesystem actions
         :return: None
         """
-        self._set_mode_option(Tracing.MODE_FILE_ACCESS, enabled)
+        self._set_mode_option(TRACING_MODE_FILE_ACCESS, enabled)
 
     def is_file_access_tracing(self):
         """
-        Returns True if the current tracer setup has Tracing.MODE_FILE_ACCESS enabled, else false
+        Returns True if the current tracer setup has TRACING_MODE_FILE_ACCESS enabled, else false
         :return: True or False
         """
-        return self._mode & Tracing.MODE_FILE_ACCESS
+        return self._mode & TRACING_MODE_FILE_ACCESS
 
     def set_syscall_tracing(self, enabled):
         """
@@ -187,14 +186,14 @@ class Tracing:
         :param enabled: True if the tracer should record all syscalls that occurred during execution
         :return: None
         """
-        self._set_mode_option(Tracing.MODE_SYSCALLS, enabled)
+        self._set_mode_option(TRACING_MODE_SYSCALLS, enabled)
 
     def is_syscall_tracing(self):
         """
-        Returns True if the current tracer setup has Tracing.MODE_SYSCALLS enabled, else false
+        Returns True if the current tracer setup has TRACING_MODE_SYSCALLS enabled, else false
         :return: True or False
         """
-        return self._mode & Tracing.MODE_SYSCALLS
+        return self._mode & TRACING_MODE_SYSCALLS
 
     def set_syscall_argument_tracing(self, enabled):
         """
@@ -202,14 +201,14 @@ class Tracing:
         :param enabled: True if the tracer should record all arguments of the syscalls that occurred during execution
         :return: None
         """
-        self._set_mode_option(Tracing.MODE_SYSCALL_ARGUMENTS, enabled)
+        self._set_mode_option(TRACING_MODE_SYSCALL_ARGUMENTS, enabled)
 
     def is_syscall_argument_tracing(self):
         """
-        Returns True if the current tracer setup has Tracing.MODE_SYSCALL_ARGUMENTS enabled, else false
+        Returns True if the current tracer setup has TRACING_MODE_SYSCALL_ARGUMENTS enabled, else false
         :return: True or False
         """
-        return self._mode & Tracing.MODE_SYSCALL_ARGUMENTS
+        return self._mode & TRACING_MODE_SYSCALL_ARGUMENTS
 
     def _set_mode_option(self, bit, enabled):
         """
@@ -221,7 +220,7 @@ class Tracing:
         if enabled:
             self._mode |= bit
         else:
-            self._mode &= Tracing._MODE_MASK ^ bit
+            self._mode &= TRACING_MODE_MASK ^ bit
 
     def _trace_create_thread(self, pid, old_debugger=None, is_thread=False):
         """
@@ -303,16 +302,19 @@ class Tracing:
                 return False
 
             # Fetch the syscall state
-            state = traced_item.syscall_state
-            syscall = state.event(self._debugger_options)
+            if self.is_syscall_tracing or self.is_file_access_tracing:
+                state = traced_item.syscall_state
+                syscall = state.event(self._debugger_options)
 
-            # Trace the syscall in the process record if it is not filtered out
-            if Tracing._should_record_syscall(syscall, self.syscall_filter, self.syscall_filter_exclude):
-                record.syscall_log(syscall)
+                # Trace the syscall in the process record if it is not filtered out
+                if self.is_syscall_tracing and \
+                        Tracing._should_record_syscall(syscall, self.syscall_filter, self.syscall_filter_exclude):
+                    record.syscall_log(syscall)
 
-            # Trace file access if the syscall is a file access syscall and not filtered out
-            if Tracing._should_record_syscall(syscall, self.file_access_filter, self.file_access_filter_exclude):
-                record.file_access_log(syscall)
+                # Trace file access if the syscall is a file access syscall and not filtered out
+                if self.is_file_access_tracing and \
+                        Tracing._should_record_syscall(syscall, self.file_access_filter, self.file_access_filter_exclude):
+                    record.file_access_log(syscall)
 
         except NewProcessEvent as event:
             # Trace new process and continue parent
@@ -349,7 +351,7 @@ class Tracing:
         traced_item.syscall(signum)
 
     @staticmethod
-    def _trace_finish(self, event, record):
+    def _trace_finish(event, record):
         """
         Handle process or thread completion
         Determine exit code and termination signal and return them
@@ -402,18 +404,17 @@ class Tracing:
         :param filter_exclude_list: List of syscalls to exclude explicitly
         :return: True if the syscall should be recorded - else False
         """
-        if filter_list and not syscall.id in filter_list and not syscall.name in filter_list:
+        if filter_list and not syscall.syscall in filter_list and not syscall.name in filter_list:
             return False
 
-        if filter_exclude_list and (syscall.id in filter_list or syscall.name in filter_list):
+        if filter_exclude_list and (syscall.syscall in filter_list or syscall.name in filter_list):
             return False
 
         return True
 
-    # Mode propery accessors
+    # Mode property accessors
     runtime_tracing = property(is_runtime_tracing, set_runtime_tracing)
     file_access_tracing = property(is_file_access_tracing, set_file_access_tracing)
     syscall_tracing = property(is_syscall_tracing, set_syscall_tracing)
     syscall_argument_tracing = property(is_syscall_argument_tracing, set_syscall_argument_tracing)
     running = property(is_running, set_running)
-
