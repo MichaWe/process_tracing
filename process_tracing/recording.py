@@ -43,15 +43,18 @@ class TracingRecord(object):
         """
         self._log.append(LogRecord(message))
 
-    def runtime_log(self, message_type, message=None):
+    def runtime_log(self, message_type, message=None, signal=None, exit_code=None, child_pid=None):
         """
         Record the given message (of process related recording is enabled)
         :param message_type: Process action type
         :param message: Additional message
+        :param signal: Received signal number
+        :param exit_code: Exit code to associate with the log entry
+        :param child_pid: Child pid to associate with the object
         :return: None
         """
         if self.mode & TRACING_MODE_RUNTIME_TRACING:
-            self._log.append(RuntimeActionRecord(message_type, message))
+            self._log.append(RuntimeActionRecord(message_type, message, signal, exit_code, child_pid))
 
     def syscall_log(self, syscall):
         """
@@ -84,9 +87,10 @@ class TracingRecord(object):
         if self.mode & TRACING_MODE_FILE_ACCESS:
             # Check if this is the result of a syscall or a new issued syscall
             is_new_syscall = (syscall.result is None)
+            detailed = ((self.mode & TRACING_MODE_FILE_ACCESS_DETAILED) != 0)
 
             if not is_new_syscall:
-                self._log.append(FileAccessRecord(syscall))
+                self._log.append(FileAccessRecord(syscall, detailed))
 
     def get_exit_code(self):
         """
@@ -96,7 +100,7 @@ class TracingRecord(object):
         """
         for entry in reversed(self._log):
             if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_EXITED:
-                return entry.message['exit_code']
+                return entry.exit_code
 
         return None
 
@@ -132,14 +136,27 @@ class RuntimeActionRecord(LogRecord):
     TYPE_EXEC = 3
     TYPE_SPAWN_CHILD = 4
 
-    def __init__(self, message_type, message=None):
+    def __init__(self, message_type, message=None, signal=None, exit_code=None, child_pid=None):
         """
         Create a record for the given message
         :param message_type: Type of the message that occurred
         :param message: Optional message to describe the action
+        :param signal: Received signal number
+        :param exit_code: Exit code to associate with the log entry
+        :param child_pid: Child pid to associate with the object
+
         """
         super().__init__(message)
         self.type = message_type
+
+        if signal:
+            self.signal = signal
+
+        if exit_code:
+            self.exit_code = exit_code
+
+        if child_pid:
+            self.child_pid = child_pid
 
     def __repr__(self):
         message = "Unknown type"
@@ -212,10 +229,11 @@ class FileAccessRecord(LogRecord):
     """
     Single entry of a captured file access syscall
     """
-    def __init__(self, syscall):
+    def __init__(self, syscall, detailed):
         """
         Create a new record for the given syscall that accessed a file
         :param syscall: Syscall structure from ptrace to extract information from
+        :param detailed: Specify True if additional file access data should be recorded
         """
         super().__init__(None)
 
@@ -223,8 +241,8 @@ class FileAccessRecord(LogRecord):
         self.id = syscall.syscall
         self.result = syscall.result
         self.filename = None
-        self.is_dir = False
-        self.exists = False
+        self.is_dir = None
+        self.exists = None
 
         for argument in syscall.arguments:
             if "char *" in argument.type:
@@ -232,10 +250,13 @@ class FileAccessRecord(LogRecord):
                 text = argument.getText()
                 if "'" in text:
                     self.filename = text[text.index("'") + 1:text.rindex("'")]
-                    self.is_dir = os.path.isdir(self.filename)
-                    self.exists = os.path.exists(self.filename)
+
+                    if detailed:
+                        self.is_dir = os.path.isdir(self.filename)
+                        self.exists = os.path.exists(self.filename)
+
                     break
 
     def __repr__(self):
-        return '[{}] Fila access: {} result: {} (exits: {}, is_dir: {})'.format(
+        return '[{}] File access: {} result: {} (exits: {}, is_dir: {})'.format(
             self.timestamp, self.filename, self.result, self.exists, self.is_dir)

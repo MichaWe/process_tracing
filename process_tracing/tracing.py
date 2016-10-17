@@ -13,7 +13,7 @@ from threading import Thread
 from process_tracing.recording import TracingRecord, RuntimeActionRecord
 from process_tracing.constants import *
 
-from ptrace.debugger import PtraceDebugger, ProcessEvent, NewProcessEvent, ProcessExit, ProcessSignal, ProcessExecution
+from ptrace.debugger import PtraceDebugger, NewProcessEvent, ProcessExit, ProcessSignal, ProcessExecution
 from ptrace.func_call import FunctionCallOptions
 
 
@@ -39,9 +39,8 @@ class Tracing:
         if stop:
             posix.kill(self.process.pid, signal.SIGSTOP)
 
-        # Initialize debugger and debugger options
+        # Initialize debugger
         self._debugger_threads = None
-        self._debugger_options = FunctionCallOptions(replace_socketcall=False)
 
         # Recorded process data
         self._process_records = None
@@ -99,19 +98,19 @@ class Tracing:
         if self.process.status() != psutil.STATUS_STOPPED:
             posix.kill(self.process.pid, signal.SIGSTOP)
 
-        self._debugger_threads[self.process.pid] = self._trace_create_thread(self.process.pid)
+        self._debugger_threads[self.process.pid] = self.trace_create_thread(self.process.pid)
 
         # Start debugger for all existing process children
         processes = [self.process] + self.process.children(recursive=True)
         for p in processes:
             # Don't double start tracing of a process
             if p.pid not in self._debugger_threads.keys():
-                self._debugger_threads[p.pid] = self._trace_create_thread(p.pid)
+                self._debugger_threads[p.pid] = self.trace_create_thread(p.pid)
 
             # Start tracing of process threads
             for t in p.threads():
                 if t.id not in self._debugger_threads.keys():
-                    self._debugger_threads[t.id] = self._trace_create_thread(t.id, is_thread=True)
+                    self._debugger_threads[t.id] = self.trace_create_thread(t.id, is_thread=True)
 
         # Mark running
         self._running = True
@@ -149,8 +148,12 @@ class Tracing:
             return False
 
         # terminate all pending threads
+        for pid in self._debugger_threads.keys():
+            thread = self._debugger_threads[pid]
+            thread.stop()
+            thread.join()
 
-    def set_runtime_tracing(self, enabled):
+    def set_runtime_tracing_enabled(self, enabled):
         """
         Set the runtime tracing mode to the given state
         :param enabled: True if the tracer should record process start, end and subprocess/thread spawn
@@ -158,14 +161,14 @@ class Tracing:
         """
         self._set_mode_option(TRACING_MODE_RUNTIME_TRACING, enabled)
 
-    def is_runtime_tracing(self):
+    def is_runtime_tracing_enabled(self):
         """
         Returns True if the current tracer setup has TRACING_MODE_RUNTIME_TRACING enabled, else false
         :return: True or False
         """
         return self._mode & TRACING_MODE_RUNTIME_TRACING
 
-    def set_file_access_tracing(self, enabled):
+    def set_file_access_tracing_enabled(self, enabled):
         """
         Set the file access tracing mode to the given state
         :param enabled: True if the tracer should record all syscalls that are related to filesystem actions
@@ -173,14 +176,29 @@ class Tracing:
         """
         self._set_mode_option(TRACING_MODE_FILE_ACCESS, enabled)
 
-    def is_file_access_tracing(self):
+    def is_file_access_tracing_enabled(self):
         """
         Returns True if the current tracer setup has TRACING_MODE_FILE_ACCESS enabled, else false
         :return: True or False
         """
         return self._mode & TRACING_MODE_FILE_ACCESS
 
-    def set_syscall_tracing(self, enabled):
+    def set_file_access_detailed_tracing_enabled(self, enabled):
+        """
+        Set the file access tracing mode to the given state
+        :param enabled: True if the tracer should record all syscalls that are related to filesystem actions
+        :return: None
+        """
+        self._set_mode_option(TRACING_MODE_FILE_ACCESS_DETAILED, enabled)
+
+    def is_file_access_detailed_tracing_enabled(self):
+        """
+        Returns True if the current tracer setup has TRACING_MODE_FILE_ACCESS_DETAILED enabled, else false
+        :return: True or False
+        """
+        return self._mode & TRACING_MODE_FILE_ACCESS_DETAILED
+
+    def set_syscall_tracing_enabled(self, enabled):
         """
         Set the syscall tracing mode to the given state
         :param enabled: True if the tracer should record all syscalls that occurred during execution
@@ -188,14 +206,14 @@ class Tracing:
         """
         self._set_mode_option(TRACING_MODE_SYSCALLS, enabled)
 
-    def is_syscall_tracing(self):
+    def is_syscall_tracing_enabled(self):
         """
         Returns True if the current tracer setup has TRACING_MODE_SYSCALLS enabled, else false
         :return: True or False
         """
         return self._mode & TRACING_MODE_SYSCALLS
 
-    def set_syscall_argument_tracing(self, enabled):
+    def set_syscall_argument_tracing_enabled(self, enabled):
         """
         Set the syscall argument tracing mode to the given state
         :param enabled: True if the tracer should record all arguments of the syscalls that occurred during execution
@@ -203,7 +221,7 @@ class Tracing:
         """
         self._set_mode_option(TRACING_MODE_SYSCALL_ARGUMENTS, enabled)
 
-    def is_syscall_argument_tracing(self):
+    def is_syscall_argument_tracing_enabled(self):
         """
         Returns True if the current tracer setup has TRACING_MODE_SYSCALL_ARGUMENTS enabled, else false
         :return: True or False
@@ -222,7 +240,7 @@ class Tracing:
         else:
             self._mode &= TRACING_MODE_MASK ^ bit
 
-    def _trace_create_thread(self, pid, old_debugger=None, is_thread=False):
+    def trace_create_thread(self, pid, old_debugger=None, is_thread=False):
         """
         Create a new tracing thread
         :param pid: Process to trace
@@ -236,53 +254,140 @@ class Tracing:
         record.runtime_log(RuntimeActionRecord.TYPE_STARTED)
 
         # Create the new thread
-        thread = Thread(target=self._trace_thread, args=(pid, False, is_thread, record))
-
-        # Check if the process is attached to the debugger
-        if old_debugger is not None and old_debugger.dict.get(pid):
-            old_debugger.dict.get(pid).detach()
-            posix.kill(pid, signal.SIGSTOP)
+        thread = TracingThread(self, pid, record, old_debugger, is_thread)
 
         # run the new thread
         thread.start()
         return thread
 
-    def _trace_thread(self, pid, is_attached, is_thread, record):
+    def _create_tracing_record(self, pid):
         """
-        Runner function to trace a process/thread in a new thread
-        This will create a debugger, attach the process and terminate on process exit
-        :param pid: Process id or thread id to trace
-        :param is_attached: Specify True if there is already a debugger attached to the process
-        :param is_thread: Specify True if the given pid belongs to a single thread instead of a full process
-        :param record: Tracing data storage structure
+        Create a new tracing record for the given PID
+        :param pid: Process or thread id
+        :return: new tracing record or the existing one if it is already present
+        """
+        record = self._process_records.get(pid)
+        if not record:
+            record = TracingRecord(pid, self._mode)
+            self._process_records[pid] = record
+            record.log("Tracing record created")
+
+        return record
+
+    def should_record_syscall(self, s):
+        """
+        Check if the given syscall should be recorded or not
+        :param s: Syscall struct to check for recording
+        """
+        if not self.is_syscall_tracing_enabled():
+            return False
+
+        if self.syscall_filter and s.syscall not in self.syscall_filter and s.name not in self.syscall_filter:
+            return False
+
+        if self.syscall_filter_exclude and \
+                (s.syscall in self.syscall_filter_exclude or s.name in self.syscall_filter_exclude):
+            return False
+
+        return True
+
+    def should_record_file_access(self, syscall):
+        """
+        Check if the given file access syscall should be recorded or not
+        :param syscall: Syscall struct to check for recording
+        """
+        if not self.is_file_access_tracing_enabled():
+            return False
+
+        if self.file_access_filter and \
+                syscall.syscall not in self.file_access_filter and \
+                syscall.name not in self.file_access_filter:
+            return False
+
+        if self.file_access_filter_exclude and \
+                (syscall.syscall in self.file_access_filter_exclude or syscall.name in self.file_access_filter_exclude):
+            return False
+
+        return True
+
+    # Mode property accessors
+    runtime_tracing = property(is_runtime_tracing_enabled, set_runtime_tracing_enabled)
+    file_access_tracing = property(is_file_access_tracing_enabled, set_file_access_tracing_enabled)
+    file_access_detailed_tracing = property(is_file_access_detailed_tracing_enabled,
+                                            set_file_access_detailed_tracing_enabled)
+    syscall_tracing = property(is_syscall_tracing_enabled, set_syscall_tracing_enabled)
+    syscall_argument_tracing = property(is_syscall_argument_tracing_enabled, set_syscall_argument_tracing_enabled)
+    running = property(is_running, set_running)
+
+
+class TracingThread(Thread):
+    """
+    tracing thread that can be cancelled
+    """
+    def __init__(self, manager, pid, record, old_debugger=None, is_thread=False):
+        """
+        Create a new tracing thread
+        :param manager: overall tracing management instance
+        :param pid: Process to trace
+        :param record: Action recording instance
+        :param old_debugger: Old debugger the process might be attached to at the moment
+        :param is_thread: True if the pid is a thread else False
+        """
+        super().__init__()
+        self.manager = manager
+
+        # Save tracing record
+        self.record = record
+        self.record.runtime_log(RuntimeActionRecord.TYPE_STARTED)
+        self._debugger_options = FunctionCallOptions(replace_socketcall=False)
+
+        self.is_thread = is_thread
+        self.pid = pid
+        self.debugger = None
+        self.traced_item = None
+        self.stopped = False
+
+        # Check if the process is attached to the debugger
+        if old_debugger is not None and old_debugger.dict.get(self.pid):
+            old_debugger.dict.get(self.pid).detach()
+            posix.kill(self.pid, signal.SIGSTOP)
+
+    def stop(self):
+        """
+        Mark this thread to stop tracing
         :return: None
         """
+        self.stopped = True
 
-        traced_item = None
+    def run(self):
+        """
+        Trace the given process or thread for one syscall
+        """
         finished = False
-        record.log("Attaching debugger")
+        self.record.log("Attaching debugger")
         try:
-            debugger = PtraceDebugger()
-            debugger.traceFork()
-            debugger.traceExec()
-            debugger.traceClone()
+            self.debugger = PtraceDebugger()
+            self.debugger.traceFork()
+            self.debugger.traceExec()
+            self.debugger.traceClone()
 
-            traced_item = debugger.addProcess(pid, is_attached, is_thread=is_thread)
-            record.log("PTrace debugger attached successfully")
-            Tracing._trace_continue(traced_item)
+            self.traced_item = self.debugger.addProcess(self.pid, False, is_thread=self.is_thread)
+            self.record.log("PTrace debugger attached successfully")
+            TracingThread._trace_continue(self.traced_item)
 
         except Exception as e:
-            record.log("PTrace debugger attachment failed with reason: {}".format(e))
+            self.record.log("PTrace debugger attachment failed with reason: {}".format(e))
             finished = True
 
         # Trace process until finished
-        while not finished:
-            finished = self._trace(traced_item, record)
+        while not finished and not self.stopped:
+            finished = self._trace(self.traced_item, self.record)
 
-        if traced_item:
-            traced_item.detach()
+        if self.traced_item:
+            self.traced_item.detach()
+            posix.kill(self.pid, signal.SIGCONT)
 
-        record.log("Tracee appears to have ended and thread will finish")
+        self.record.log("Tracee appears to have ended and thread will finish")
 
     def _trace(self, traced_item, record):
         """
@@ -302,18 +407,16 @@ class Tracing:
                 return False
 
             # Fetch the syscall state
-            if self.is_syscall_tracing or self.is_file_access_tracing:
+            if self.manager.is_syscall_tracing_enabled() or self.manager.is_file_access_tracing_enabled():
                 state = traced_item.syscall_state
                 syscall = state.event(self._debugger_options)
 
                 # Trace the syscall in the process record if it is not filtered out
-                if self.is_syscall_tracing and \
-                        Tracing._should_record_syscall(syscall, self.syscall_filter, self.syscall_filter_exclude):
+                if self.manager.should_record_syscall(syscall):
                     record.syscall_log(syscall)
 
                 # Trace file access if the syscall is a file access syscall and not filtered out
-                if self.is_file_access_tracing and \
-                        Tracing._should_record_syscall(syscall, self.file_access_filter, self.file_access_filter_exclude):
+                if self.manager.should_record_file_access(syscall):
                     record.file_access_log(syscall)
 
         except NewProcessEvent as event:
@@ -321,22 +424,22 @@ class Tracing:
             self._trace_new_item(event, record)
             continue_tracing = False
 
-        except ProcessExecution as event:
+        except ProcessExecution:
             record.runtime_log(RuntimeActionRecord.TYPE_EXEC)
 
         except ProcessExit as event:
             # Finish process tracing
-            Tracing._trace_finish(event, record)
+            TracingThread._trace_finish(event, record)
             finished = True
             continue_tracing = False
 
         except ProcessSignal as event:
-            record.runtime_log(RuntimeActionRecord.TYPE_SIGNAL_RECEIVED, event.signum)
+            record.runtime_log(RuntimeActionRecord.TYPE_SIGNAL_RECEIVED, signal=event.signum)
             signum = event.signum
 
         # Continue process execution
         if continue_tracing:
-            Tracing._trace_continue(traced_item, signum)
+            TracingThread._trace_continue(traced_item, signum)
 
         return finished
 
@@ -360,7 +463,7 @@ class Tracing:
         :return: None
         """
         process = event.process
-        record.runtime_log(RuntimeActionRecord.TYPE_EXITED, {'signal': event.signum, 'exit_code': event.exitcode})
+        record.runtime_log(RuntimeActionRecord.TYPE_EXITED, signal=event.signum, exit_code=event.exitcode)
 
         # Detach from tracing
         process.detach()
@@ -375,46 +478,11 @@ class Tracing:
         parent = event.process.parent
         process = event.process
 
-        record.runtime_log(RuntimeActionRecord.TYPE_SPAWN_CHILD, process.pid)
-        Tracing._trace_continue(parent)
+        record.runtime_log(RuntimeActionRecord.TYPE_SPAWN_CHILD, child_pid=process.pid)
+        TracingThread._trace_continue(parent)
 
         # Start new tracing thread for the new process
-        self._trace_create_thread(process.pid, process.debugger, process.is_thread)
-
-    def _create_tracing_record(self, pid):
-        """
-        Create a new tracing record for the given PID
-        :param pid: Process or thread id
-        :return: new tracing record or the existing one if it is already present
-        """
-        record = self._process_records.get(pid)
-        if not record:
-            record = TracingRecord(pid, self._mode)
-            self._process_records[pid] = record
-            record.log("Tracing record created")
-
-        return record
-
-    @staticmethod
-    def _should_record_syscall(syscall, filter_list, filter_exclude_list):
-        """
-        Check if the given syscall should be recorded or not
-        :param syscall: Syscall struct to check for recording
-        :param filter_list: List of syscall to record only
-        :param filter_exclude_list: List of syscalls to exclude explicitly
-        :return: True if the syscall should be recorded - else False
-        """
-        if filter_list and not syscall.syscall in filter_list and not syscall.name in filter_list:
-            return False
-
-        if filter_exclude_list and (syscall.syscall in filter_list or syscall.name in filter_list):
-            return False
-
-        return True
-
-    # Mode property accessors
-    runtime_tracing = property(is_runtime_tracing, set_runtime_tracing)
-    file_access_tracing = property(is_file_access_tracing, set_file_access_tracing)
-    syscall_tracing = property(is_syscall_tracing, set_syscall_tracing)
-    syscall_argument_tracing = property(is_syscall_argument_tracing, set_syscall_argument_tracing)
-    running = property(is_running, set_running)
+        if not self.stopped:
+            self.manager.trace_create_thread(process.pid, process.debugger, process.is_thread)
+        else:
+            TracingThread._trace_continue(process)
