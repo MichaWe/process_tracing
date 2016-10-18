@@ -104,6 +104,28 @@ class TracingRecord(object):
 
         return None
 
+    def get_start_time(self):
+        """
+        Search for the process creation record and return the timestamp
+        :return: Timestamp or None if no process creation record is found
+        """
+        for entry in self._log:
+            if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_STARTED:
+                return entry.timestamp
+
+        return None
+
+    def get_result_stats(self):
+        """
+        Search for the exit code, exit signal and exit time of the given traced process or thread
+        :return: Tuple with (Exit time, Exit Code, Termination Signal) or None is no record was found
+        """
+        for entry in reversed(self._log):
+            if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_EXITED:
+                return entry.timestamp, entry.exit_code, entry.signal
+
+        return None
+
     exit_code = property(get_exit_code)
 
 

@@ -23,7 +23,7 @@ with open(path.join(pwd, 'README.rst'), encoding='utf-8') as f:
 setup(
     name='process_tracing',
 
-    version='0.1.0a1',
+    version='0.1.0a2',
 
     description='ptrace based process tracing utilities for python',
     long_description=long_description,
