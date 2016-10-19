@@ -23,7 +23,7 @@ with open(path.join(pwd, 'README.rst'), encoding='utf-8') as f:
 setup(
     name='process_tracing',
 
-    version='0.1.0a2',
+    version='0.1.0a3',
 
     description='ptrace based process tracing utilities for python',
     long_description=long_description,
@@ -36,7 +36,7 @@ setup(
     author_email='m.witt@htw-berlin.de',
 
     # Choose your license
-    license='GPLv3',
+    license='Apache License 2.0',
 
     # See https://pypi.python.org/pypi?%3Aaction=list_classifiers
     classifiers=[
@@ -49,7 +49,7 @@ setup(
         'Topic :: Software Development :: Libraries :: Python Modules',
 
         # Pick your license as you wish (should match "license" above)
-        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+        'License :: OSI Approved :: Apache Software License',
 
         # Specify the Python versions you support here. In particular, ensure
         # that you indicate whether you support Python 2, Python 3 or both.
