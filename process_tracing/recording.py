@@ -9,6 +9,8 @@ Licence: GPLv3
 import time
 import os
 from process_tracing.constants import *
+from ptrace.syscall.socketcall_struct import sockaddr, sockaddr_un
+from ptrace.syscall.socketcall import AF_FILE
 
 
 class TracingRecord(object):
@@ -171,11 +173,8 @@ class RuntimeActionRecord(LogRecord):
         super().__init__(message)
         self.type = message_type
 
-        if signal:
-            self.signal = signal
-
-        if exit_code:
-            self.exit_code = exit_code
+        self.signal = signal
+        self.exit_code = exit_code
 
         if child_pid:
             self.child_pid = child_pid
@@ -268,17 +267,22 @@ class FileAccessRecord(LogRecord):
 
         for argument in syscall.arguments:
             if "char *" in argument.type:
-                # Get argument text and strip redundant quotes
-                text = argument.getText()
-                if "'" in text:
-                    self.filename = text[text.index("'") + 1:text.rindex("'")]
-
-                    if detailed:
-                        self.is_dir = os.path.isdir(self.filename)
-                        self.exists = os.path.exists(self.filename)
-
+                text, _ = syscall.process.readCString(argument.value, 1000)
+                if text:
+                    self.filename = text.decode('utf-8')
                     break
 
+            elif "sockaddr *" in argument.type:
+                s = syscall.process.readStruct(argument.value, sockaddr)
+                if s.family == AF_FILE:
+                    v = syscall.process.readStruct(argument.value, sockaddr_un)
+                    self.filename = v.sun_path.decode('utf-8')
+                    break
+
+        if self.filename and detailed:
+            self.is_dir = os.path.isdir(self.filename)
+            self.exists = os.path.exists(self.filename)
+
     def __repr__(self):
-        return '[{}] File access: {} result: {} (exits: {}, is_dir: {})'.format(
-            self.timestamp, self.filename, self.result, self.exists, self.is_dir)
+        return '[{}] File access to {} by syscall {}, result: {} (exits: {}, is_dir: {})'.format(
+            self.timestamp, self.filename, self.name, self.result, self.exists, self.is_dir)
