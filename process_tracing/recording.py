@@ -11,6 +11,7 @@ import os
 from process_tracing.constants import *
 from ptrace.syscall.socketcall_struct import sockaddr, sockaddr_un
 from ptrace.syscall.socketcall import AF_FILE
+from ptrace.error import PtraceError
 
 
 class TracingRecord(object):
@@ -266,18 +267,22 @@ class FileAccessRecord(LogRecord):
         self.exists = None
 
         for argument in syscall.arguments:
-            if "char *" in argument.type:
-                text, _ = syscall.process.readCString(argument.value, 1000)
-                if text:
-                    self.filename = text.decode('utf-8')
-                    break
+            try:
+                if "char *" in argument.type:
+                    text, _ = syscall.process.readCString(argument.value, 1024)
+                    if text:
+                        self.filename = text.decode('utf-8')
+                        break
 
-            elif "sockaddr *" in argument.type:
-                s = syscall.process.readStruct(argument.value, sockaddr)
-                if s.family == AF_FILE:
-                    v = syscall.process.readStruct(argument.value, sockaddr_un)
-                    self.filename = v.sun_path.decode('utf-8')
-                    break
+                elif "sockaddr *" in argument.type:
+                    s = syscall.process.readStruct(argument.value, sockaddr)
+                    if s.family == AF_FILE:
+                        v = syscall.process.readStruct(argument.value, sockaddr_un)
+                        self.filename = v.sun_path.decode('utf-8')
+                        break
+            except PtraceError:
+                # argument reading may fail
+                pass
 
         if self.filename and detailed:
             self.is_dir = os.path.isdir(self.filename)

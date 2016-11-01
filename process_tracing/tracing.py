@@ -127,7 +127,8 @@ class Tracing:
                 return False
 
         # wait for all pending threads
-        for pid in self._debugger_threads.keys():
+        pids = list(self._debugger_threads.keys())
+        for pid in pids:
             thread = self._debugger_threads[pid]
             thread.join()
 
@@ -147,7 +148,8 @@ class Tracing:
             return False
 
         # terminate all pending threads
-        for pid in self._debugger_threads.keys():
+        pids = list(self._debugger_threads.keys())
+        for pid in pids:
             thread = self._debugger_threads[pid]
             thread.stop()
             thread.join()
@@ -400,6 +402,7 @@ class TracingThread(Thread):
                 if self.process.status() == psutil.STATUS_STOPPED:
                     posix.kill(self.process.pid, signal.SIGCONT)
             except psutil.NoSuchProcess:
+                print("Process appears to be gone!")
                 pass
 
         self.record.log("Tracee appears to have ended and thread will finish")
