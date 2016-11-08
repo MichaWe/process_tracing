@@ -70,7 +70,7 @@ class TracingRecord(object):
         if self.mode & TRACING_MODE_SYSCALLS:
             # Check if this is the result of a syscall or a new issued syscall
             is_new_syscall = (syscall.result is None)
-            extract_arguments = ((self.mode & TRACING_MODE_SYSCALL_ARGUMENTS) != 0)
+            extract_arguments = ((self.mode & TRACING_MODE_SYSCALL_ARGUMENTS) == TRACING_MODE_SYSCALL_ARGUMENTS)
 
             if is_new_syscall:
                 self._log.append(SyscallRecord(syscall, extract_arguments))
@@ -90,7 +90,7 @@ class TracingRecord(object):
         if self.mode & TRACING_MODE_FILE_ACCESS:
             # Check if this is the result of a syscall or a new issued syscall
             is_new_syscall = (syscall.result is None)
-            detailed = ((self.mode & TRACING_MODE_FILE_ACCESS_DETAILED) != 0)
+            detailed = ((self.mode & TRACING_MODE_FILE_ACCESS_DETAILED) == TRACING_MODE_FILE_ACCESS_DETAILED)
 
             if not is_new_syscall:
                 self._log.append(FileAccessRecord(syscall, detailed))
@@ -248,7 +248,7 @@ class SyscallArgument(object):
             self.text = argument.getText()
         except PtraceError as pte:
             self.text = ""
-            
+
 
 class FileAccessRecord(LogRecord):
     """
