@@ -244,8 +244,11 @@ class SyscallArgument(object):
         self.name = argument.name
         self.type = argument.type
         self.value = argument.value
-        self.text = argument.getText()
-
+        try:
+            self.text = argument.getText()
+        except PtraceError as pte:
+            self.text = ""
+            
 
 class FileAccessRecord(LogRecord):
     """

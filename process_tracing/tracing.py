@@ -167,7 +167,7 @@ class Tracing:
         Returns True if the current tracer setup has TRACING_MODE_RUNTIME_TRACING enabled, else false
         :return: True or False
         """
-        return self._mode & TRACING_MODE_RUNTIME_TRACING
+        return self._get_mode_option(TRACING_MODE_RUNTIME_TRACING)
 
     def set_file_access_tracing_enabled(self, enabled):
         """
@@ -182,7 +182,7 @@ class Tracing:
         Returns True if the current tracer setup has TRACING_MODE_FILE_ACCESS enabled, else false
         :return: True or False
         """
-        return self._mode & TRACING_MODE_FILE_ACCESS
+        return self._get_mode_option(TRACING_MODE_FILE_ACCESS)
 
     def set_file_access_detailed_tracing_enabled(self, enabled):
         """
@@ -201,7 +201,7 @@ class Tracing:
         Returns True if the current tracer setup has TRACING_MODE_FILE_ACCESS_DETAILED enabled, else false
         :return: True or False
         """
-        return self._mode & TRACING_MODE_FILE_ACCESS_DETAILED
+        return self._get_mode_option(TRACING_MODE_FILE_ACCESS_DETAILED)
 
     def set_syscall_tracing_enabled(self, enabled):
         """
@@ -216,7 +216,7 @@ class Tracing:
         Returns True if the current tracer setup has TRACING_MODE_SYSCALLS enabled, else false
         :return: True or False
         """
-        return self._mode & TRACING_MODE_SYSCALLS
+        return self._get_mode_option(TRACING_MODE_SYSCALLS)
 
     def set_syscall_argument_tracing_enabled(self, enabled):
         """
@@ -235,7 +235,7 @@ class Tracing:
         Returns True if the current tracer setup has TRACING_MODE_SYSCALL_ARGUMENTS enabled, else false
         :return: True or False
         """
-        return self._mode & TRACING_MODE_SYSCALL_ARGUMENTS
+        return self._get_mode_option(TRACING_MODE_SYSCALL_ARGUMENTS)
 
     def _set_mode_option(self, bit, enabled):
         """
@@ -248,6 +248,14 @@ class Tracing:
             self._mode |= bit
         else:
             self._mode &= TRACING_MODE_MASK ^ bit
+
+    def _get_mode_option(self, bit):
+        """
+        Return the enabled state of the given mode bit(s)
+        :param bit: Bit to get to the given state
+        :return: True if all the given bits are enabled else False
+        """
+        return (self._mode & bit) == bit
 
     def trace_create_thread(self, pid, old_debugger=None, is_thread=False):
         """
@@ -402,7 +410,6 @@ class TracingThread(Thread):
                 if self.process.status() == psutil.STATUS_STOPPED:
                     posix.kill(self.process.pid, signal.SIGCONT)
             except psutil.NoSuchProcess:
-                print("Process appears to be gone!")
                 pass
 
         self.record.log("Tracee appears to have ended and thread will finish")
