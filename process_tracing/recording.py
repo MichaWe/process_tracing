@@ -49,12 +49,12 @@ class TracingRecord(object):
             raise AttributeError("Callback invocation recording requested but no callback method specified")
 
         if self.recording_mode & TRACING_RECORD_MODE_FILE and self.log_filename:
-            self._file_locks_access_lock.acquire()
+            TracingRecord._file_locks_access_lock.acquire()
             if self.log_filename not in TracingRecord._file_locks.keys():
                 file = open(self.log_filename, 'w', newline='\n')
                 writer = csv.writer(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
-                TracingRecord._file_locks[self.log_filename] = (Lock(), writer)
-            self._file_locks_access_lock.release()
+                TracingRecord._file_locks[self.log_filename] = (Lock(), writer, file)
+            TracingRecord._file_locks_access_lock.release()
 
         self._log = []
         self._syscall_cache = []
@@ -75,7 +75,7 @@ class TracingRecord(object):
 
         if self.recording_mode & TRACING_RECORD_MODE_FILE:
             # Aquire file lock
-            lock, writer = TracingRecord._file_locks[self.log_filename]
+            lock, writer, file = TracingRecord._file_locks[self.log_filename]
             lock.acquire()
             writer.writerow([self.pid] + record.get_log_message_items())
             lock.release()
@@ -181,6 +181,23 @@ class TracingRecord(object):
         return self._end_time, self._exit_code, self._signal
 
     exit_code = property(get_exit_code)
+
+    @staticmethod
+    def flush():
+        """
+        Close all open file handles and flush the log file dictionary
+        All existing TracingRecord instances will no longer be able to write log files after invoking this method
+        :return: None
+        """
+        TracingRecord._file_locks_access_lock.acquire()
+        for filename in  TracingRecord._file_locks.keys():
+            lock, writer, file = TracingRecord._file_locks[filename]
+            lock.acquire()
+            file.close()
+            lock.release()
+
+        TracingRecord._file_locks = {}
+        TracingRecord._file_locks_access_lock.release()
 
 
 class LogRecord(object):

@@ -149,6 +149,8 @@ class Tracing:
             thread = self._debugger_threads[pid]
             thread.join()
 
+        TracingRecord.flush()
+
         # Fetch execution result
         if self.runtime_tracing:
             record = self._process_records[self.process.pid]
@@ -170,6 +172,8 @@ class Tracing:
             thread = self._debugger_threads[pid]
             thread.stop()
             thread.join()
+
+        TracingRecord.flush()
 
     def set_runtime_tracing_enabled(self, enabled):
         """
