@@ -19,15 +19,20 @@ from ptrace.func_call import FunctionCallOptions
 
 class Tracing:
     """
-
+    Class that will handle the debugger setup, management and cleanup
     """
-    def __init__(self, process, stop=False):
+    def __init__(self, process, stop=False, recording_mode=TRACING_RECORD_MODE_MEMORY, log_filename=None, log_callback=None):
         """
         Create a new tracing instance
         This will bind to the given process and enable process observation
         using the capabilities of ptrace
         :param process: psutil.Process instance or pid of the process to trace
         :param stop: Specify true to send SIGSTOP to the process to temporary halt it
+        :param recording_mode: Mask to configure how recorded events should be saved
+        :param log_filename: If the recording_mode contains TRACING_RECORD_MODE_FILE you must specify a filename
+                             where you want to write the log data to - writing to the file will be thread save
+        :param log_callback: If the recording_mode contains TRACING_RECORD_MODE_CALLBACK you must specify a function to
+                             invoke for every log entry
         """
         if type(process) == int:
             self.process = psutil.Process(process)
@@ -49,7 +54,9 @@ class Tracing:
         # If this parameters are valid iterables traced syscalls will be checked if they
         # are in the given filter list. If not they won't get recorded
         self.syscall_filter = None
-        self.file_access_filter = ["open", "stat", "lstat", "access", "connect"]
+        self.file_access_filter = ["open", "stat", "lstat", "access", "connect", "chdir", "rename", "mkdir", "rmdir",
+                                   "creat", "link", "unlink", "symlink", "readlink", "chmod", "chown", "lchown", "utime"
+                                   "mknod", "statfs", "chroot", "pivot_root"]
 
         self.syscall_filter_exclude = None
         self.file_access_filter_exclude = None
@@ -57,6 +64,16 @@ class Tracing:
         # We start in Process runtime tracing mode only
         self._mode = TRACING_MODE_RUNTIME_TRACING
         self._running = False
+
+        self._recording_mode = recording_mode
+        self._log_filename = log_filename
+        self._log_callback = log_callback
+
+        if self._recording_mode & TRACING_RECORD_MODE_FILE and not self._log_filename:
+            raise AttributeError("File recording requested but no log file specified")
+
+        if self._recording_mode & TRACING_RECORD_MODE_CALLBACK and not self._log_callback:
+            raise AttributeError("Callback invocation recording requested but no callback method specified")
 
     def get_logs(self):
         """
@@ -288,7 +305,7 @@ class Tracing:
         """
         record = self._process_records.get(pid)
         if not record:
-            record = TracingRecord(pid, self._mode)
+            record = TracingRecord(pid, self._mode, self._recording_mode, self._log_filename, self._log_callback)
             self._process_records[pid] = record
             record.log("Tracing record created")
 

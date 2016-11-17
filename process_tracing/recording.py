@@ -8,10 +8,12 @@ Licence: GPLv3
 """
 import time
 import os
+import csv
 from process_tracing.constants import *
 from ptrace.syscall.socketcall_struct import sockaddr, sockaddr_un
 from ptrace.syscall.socketcall import AF_FILE
 from ptrace.error import PtraceError
+from multiprocessing import Lock
 
 
 class TracingRecord(object):
@@ -19,17 +21,67 @@ class TracingRecord(object):
     Class that encapsulates all information about a traced process or thread
     """
 
-    def __init__(self, pid, mode):
+    _file_locks = {}
+    _file_locks_access_lock = Lock()
+
+    def __init__(self, pid, mode, recording_mode=TRACING_RECORD_MODE_MEMORY, log_filename=None, log_callback=None):
         """
         Create a new tracing record for the given process or thread id
         and use the given mode to configure logging details
         :param pid: Process or thread id the record is created for
-        :param mode: Tracking mode
+        :param mode: Tracing mode
+        :param recording_mode: Mask to configure how recorded events should be saved
+        :param log_filename: If the recording_mode contains TRACING_RECORD_MODE_FILE you must specify a filename
+                             where you want to write the log data to - writing to the file will be thread save
+        :param log_callback: If the recording_mode contains TRACING_RECORD_MODE_CALLBACK you must specify a function to
+                             invoke for every log entry
         """
         self.pid = pid
         self.mode = mode
+        self.recording_mode = recording_mode
+        self.log_filename = log_filename
+        self.log_callback = log_callback
+
+        if self.recording_mode & TRACING_RECORD_MODE_FILE and not self.log_filename:
+            raise AttributeError("File recording requested but no log file specified")
+
+        if self.recording_mode & TRACING_RECORD_MODE_CALLBACK and not self.log_callback:
+            raise AttributeError("Callback invocation recording requested but no callback method specified")
+
+        if self.recording_mode & TRACING_RECORD_MODE_FILE and self.log_filename:
+            self._file_locks_access_lock.acquire()
+            if self.log_filename not in TracingRecord._file_locks.keys():
+                file = open(self.log_filename, 'w', newline='\n')
+                writer = csv.writer(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
+                TracingRecord._file_locks[self.log_filename] = (Lock(), writer)
+            self._file_locks_access_lock.release()
 
         self._log = []
+        self._syscall_cache = []
+
+        self._exit_code = None
+        self._start_time = None
+        self._end_time = None
+        self._signal = None
+
+    def _save_log_message(self, record):
+        """
+        Save the given log record - this will handle the recording mode according to the user preferences
+        :param record: Record to persist
+        :return: None
+        """
+        if self.recording_mode & TRACING_RECORD_MODE_MEMORY:
+            self._log.append(record)
+
+        if self.recording_mode & TRACING_RECORD_MODE_FILE:
+            # Aquire file lock
+            lock, writer = TracingRecord._file_locks[self.log_filename]
+            lock.acquire()
+            writer.writerow([self.pid] + record.get_log_message_items())
+            lock.release()
+
+        if self.recording_mode & TRACING_RECORD_MODE_CALLBACK:
+            self.log_callback(self, record)
 
     def get_log(self):
         """
@@ -44,7 +96,7 @@ class TracingRecord(object):
         :param message: Message to record
         :return: None
         """
-        self._log.append(LogRecord(message))
+        self._save_log_message(LogRecord(message))
 
     def runtime_log(self, message_type, message=None, signal=None, exit_code=None, child_pid=None):
         """
@@ -57,7 +109,15 @@ class TracingRecord(object):
         :return: None
         """
         if self.mode & TRACING_MODE_RUNTIME_TRACING:
-            self._log.append(RuntimeActionRecord(message_type, message, signal, exit_code, child_pid))
+            record = RuntimeActionRecord(message_type, message, signal, exit_code, child_pid)
+            self._save_log_message(record)
+
+            if message_type == RuntimeActionRecord.TYPE_EXITED:
+                self._exit_code = exit_code
+                self._signal = signal
+                self._end_time = record.timestamp
+            elif message_type == RuntimeActionRecord.TYPE_STARTED:
+                self._start_time = record.timestamp
 
     def syscall_log(self, syscall):
         """
@@ -73,12 +133,15 @@ class TracingRecord(object):
             extract_arguments = ((self.mode & TRACING_MODE_SYSCALL_ARGUMENTS) == TRACING_MODE_SYSCALL_ARGUMENTS)
 
             if is_new_syscall:
-                self._log.append(SyscallRecord(syscall, extract_arguments))
+                self._syscall_cache.append(SyscallRecord(syscall, extract_arguments))
             else:
                 # Find the last syscall log entry
-                for entry in reversed(self._log):
-                    if type(entry) == SyscallRecord:
+                for index in range(-1, -(len(self._syscall_cache) + 1), -1):
+                    entry = self._syscall_cache[index]
+                    if entry.name == syscall.name:
                         entry.update(syscall)
+                        self._save_log_message(entry)
+                        self._syscall_cache.pop(index)
                         break
 
     def file_access_log(self, syscall):
@@ -93,7 +156,7 @@ class TracingRecord(object):
             detailed = ((self.mode & TRACING_MODE_FILE_ACCESS_DETAILED) == TRACING_MODE_FILE_ACCESS_DETAILED)
 
             if not is_new_syscall:
-                self._log.append(FileAccessRecord(syscall, detailed))
+                self._save_log_message(FileAccessRecord(syscall, detailed))
 
     def get_exit_code(self):
         """
@@ -101,33 +164,21 @@ class TracingRecord(object):
         This will search the log for a RuntimeActionRecord with the RuntimeActionRecord.TYPE_EXITED type
         :return: Exit code if a matching record was found, else None
         """
-        for entry in reversed(self._log):
-            if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_EXITED:
-                return entry.exit_code
-
-        return None
+        return self._exit_code
 
     def get_start_time(self):
         """
         Search for the process creation record and return the timestamp
         :return: Timestamp or None if no process creation record is found
         """
-        for entry in self._log:
-            if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_STARTED:
-                return entry.timestamp
-
-        return None
+        return self._start_time
 
     def get_result_stats(self):
         """
         Search for the exit code, exit signal and exit time of the given traced process or thread
         :return: Tuple with (Exit time, Exit Code, Termination Signal) or None is no record was found
         """
-        for entry in reversed(self._log):
-            if type(entry) == RuntimeActionRecord and entry.type == RuntimeActionRecord.TYPE_EXITED:
-                return entry.timestamp, entry.exit_code, entry.signal
-
-        return None
+        return self._end_time, self._exit_code, self._signal
 
     exit_code = property(get_exit_code)
 
@@ -144,6 +195,13 @@ class LogRecord(object):
         """
         self.timestamp = time.time()
         self.message = message
+
+    def get_log_message_items(self):
+        """
+        Return all fields in a list that should be written to CSV log file
+        :return: List of items to save
+        """
+        return ["log", self.timestamp, self.message]
 
     def __repr__(self):
         return '[{}] LOG: {}'.format(self.timestamp, self.message)
@@ -179,6 +237,32 @@ class RuntimeActionRecord(LogRecord):
 
         if child_pid:
             self.child_pid = child_pid
+        else:
+            self.child_pid = None
+
+    def get_log_message_items(self):
+        return ["run", self.timestamp, RuntimeActionRecord._get_type_name(self.type), self.message, self.exit_code,
+                self.signal, self.child_pid]
+
+    @staticmethod
+    def _get_type_name(type):
+        """
+        Return the human readable type name
+        :param type: Type identifier number
+        :return: String identifying the type
+        """
+        if type == RuntimeActionRecord.TYPE_STARTED:
+            return "start"
+        elif type == RuntimeActionRecord.TYPE_EXITED:
+            return "exit"
+        elif type == RuntimeActionRecord.TYPE_SIGNAL_RECEIVED:
+            return "signal"
+        elif type == RuntimeActionRecord.TYPE_EXEC:
+            return "execve"
+        elif type == RuntimeActionRecord.TYPE_SPAWN_CHILD:
+            return "spawn"
+        else:
+            return "unknown"
 
     def __repr__(self):
         message = "Unknown type"
@@ -218,6 +302,16 @@ class SyscallRecord(LogRecord):
             self.arguments = []
             for argument in syscall.arguments:
                 self.arguments.append(SyscallArgument(argument))
+        else:
+            self.arguments = None
+
+    def get_log_message_items(self):
+        items = ["syscall", self.timestamp, self.name, self.id, self.t_start, self.t_end, self.result]
+        if self.arguments:
+            for item in self.arguments:
+                items += item.get_log_message_items()
+
+        return items
 
     def update(self, syscall):
         """
@@ -248,6 +342,9 @@ class SyscallArgument(object):
             self.text = argument.getText()
         except PtraceError as pte:
             self.text = ""
+
+    def get_log_message_items(self):
+        return [self.name, self.type, self.text]
 
 
 class FileAccessRecord(LogRecord):
@@ -290,6 +387,9 @@ class FileAccessRecord(LogRecord):
         if self.filename and detailed:
             self.is_dir = os.path.isdir(self.filename)
             self.exists = os.path.exists(self.filename)
+
+    def get_log_message_items(self):
+        return ["file", self.timestamp, self.filename, self.name, self.result, self.is_dir, self.exists]
 
     def __repr__(self):
         return '[{}] File access to {} by syscall {}, result: {} (exits: {}, is_dir: {})'.format(
