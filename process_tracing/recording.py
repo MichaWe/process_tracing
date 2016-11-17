@@ -51,8 +51,8 @@ class TracingRecord(object):
         if self.recording_mode & TRACING_RECORD_MODE_FILE and self.log_filename:
             TracingRecord._file_locks_access_lock.acquire()
             if self.log_filename not in TracingRecord._file_locks.keys():
-                file = open(self.log_filename, 'w', newline='\n')
-                writer = csv.writer(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
+                file = open(self.log_filename, 'w', newline='')
+                writer = csv.writer(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL, dialect='unix')
                 TracingRecord._file_locks[self.log_filename] = (Lock(), writer, file)
             TracingRecord._file_locks_access_lock.release()
 
